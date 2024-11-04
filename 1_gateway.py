@@ -40,7 +40,7 @@ def create_entry(bpf_map, key, label, timestamp):
 
 b = BPF(src_file="gateway.bpf.c")
 
-interface = "lo"
+interface = "eth0"
 
 # Initialize the mapping users-labels
 auth_map = b.get_table("auth_map")
@@ -61,6 +61,7 @@ ipr = pyroute2.IPRoute()
 eth = ipr.link_lookup(ifname=interface)[0]
 ipr.tc("add", "clsact", eth)
 ipr.tc("add-filter", "bpf", eth, ":1", fd=f_out.fd, name=f_out.name, parent="ffff:fff3", classid=1, direct_action=True)
+
 
 while 1:
     try:

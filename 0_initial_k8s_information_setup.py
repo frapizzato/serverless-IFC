@@ -38,7 +38,8 @@ def extract_pod_ips():
             tagged.append(i.status.pod_ip)
         elif(re.match(pattern,i.metadata.name)):
             gateway.append(i.status.pod_ip)
-        else:
+        elif(i.metadata.namespace == "openfaas"):
+        #else:
             output.append(i.status.pod_ip)
 
     return output, gateway, tagged
@@ -47,7 +48,7 @@ def fill_bpf_allow_map(bpf_map, allowed_ips):
     for ip in allowed_ips:
         print(f"[+] Adding {ip} to allowed IPs")
         bpf_map[bpf_map.Key(ip_string_to_32bit_int(ip))] = bpf_map.Leaf(0)
-        sleep(5)
+        sleep(1)
 
 def fill_bpf_tagged_map(bpf_map, tagged_ips):
     for ip in tagged_ips:
