@@ -73,7 +73,7 @@ int handle_ingress(struct xdp_md *ctx){
 //          - IF tcp.payload >= sizeof(LABEL) + sizeof("HTTP ...") THEN:
             if(payload_length > HTTP_AND_LABEL_LEN){
 //              - check if it is indeed an HTTP response or request (i.e., either "HTTP ..." or "GET..." or "POST.. " or "PUT..." or "DELETE..." or "PATCH..." or "OPTIONS..." or "HEAD...")
-                u8 *cursor_HTTP = data + payload_offset + 16; /* skip the label */
+                u8 *cursor_HTTP = data + payload_offset; //TEST + 16; /* skip the label */
                 int buff_len_HTTP = 4;
                 u8 buff_HTTP[4];
                 ret = bpf_probe_read_kernel(buff_HTTP, buff_len_HTTP, cursor_HTTP);
@@ -110,7 +110,7 @@ int handle_ingress(struct xdp_md *ctx){
                     return XDP_PASS;
                 }
 
-                tag = data + sizeof(*eth) + sizeof(*ip) + tcp_header_length;
+                tag = data + sizeof(*eth) + sizeof(*ip) + tcp_header_length - sizeof(*tag); //TEST -> now the doff points after tag!
                 bpf_trace_printk("[F][I] received label: {%d, %d}\n", tag->label, tag->timestamp);
 
                 ret = fifo.update(&key, tag);
@@ -162,6 +162,11 @@ int handle_ingress(struct xdp_md *ctx){
                 int tmp = ip_copy.tot_len;
                 tmp -= 16<<8; /* network order */
                 ip_copy.tot_len = tmp;
+
+                //TEST
+                tmp = tcp_copy.doff;
+                tmp -= 4;
+                tcp_copy.doff = tmp;
 
                 __builtin_memcpy(eth, &eth_copy, sizeof(eth_copy));
                 __builtin_memcpy(ip, &ip_copy, sizeof(ip_copy));
@@ -314,6 +319,11 @@ int handle_egress(struct __sk_buff *skb){
                     return TC_ACT_SHOT;
                 }
 
+                //TEST: create custom tag
+                tag->label = 42;
+                tag->timestamp = 0;
+                bpf_trace_printk("[F][E] updated label: {%d, %d}\n", tag->label, tag->timestamp);
+
                 // modify the packet
                 struct ethhdr eth_copy;
                 struct iphdr ip_copy;
@@ -354,6 +364,13 @@ int handle_egress(struct __sk_buff *skb){
                 int tmp = ip_copy.tot_len;
                 tmp += 16<<8;
                 ip_copy.tot_len = tmp;
+
+                //TEST: add 16 bytes of tag to the TCP options
+                bpf_trace_printk("[F][E] Initial TCP data offset: %d\n", tcp_copy.doff);
+                tmp = tcp_copy.doff;
+                tmp += 4;
+                tcp_copy.doff = tmp;
+                bpf_trace_printk("[F][E] New TCP data offset: %d\n", tcp_copy.doff);
 
                 /* need recasting after bpf_skb_adjust_room */
                 data = (void *)(long)skb->data;

@@ -81,7 +81,7 @@ int handle_ingress(struct xdp_md *ctx){
 //          - IF tcp.payload >= sizeof(LABEL) + sizeof("HTTP ...") THEN:
             if(payload_length > HTTP_AND_LABEL_LEN){
 //              - check if it is indeed an HTTP response or request (i.e., either "HTTP ..." or "GET..." or "POST.. " or "PUT..." or "DELETE..." or "PATCH..." or "OPTIONS..." or "HEAD...")
-                u8 *cursor_HTTP = data + payload_offset + 16; /* skip the label */
+                u8 *cursor_HTTP = data + payload_offset; //TEST + 16; /* skip the label */
                 int buff_len_HTTP = 4;
                 u8 buff_HTTP[4];
                 ret = bpf_probe_read_kernel(buff_HTTP, buff_len_HTTP, cursor_HTTP);
@@ -118,7 +118,7 @@ int handle_ingress(struct xdp_md *ctx){
                     return XDP_PASS;
                 }
 
-                tag = data + sizeof(*eth) + sizeof(*ip) + tcp_header_length;
+                tag = data + sizeof(*eth) + sizeof(*ip) + tcp_header_length - sizeof(*tag); // TEST -> now doff points after tag
                 bpf_trace_printk("[GW][I] received label: {%d, %d}\n", tag->label, tag->timestamp);
 
                 ret = fifo.update(&key, tag);
@@ -171,6 +171,11 @@ int handle_ingress(struct xdp_md *ctx){
                 tmp -= 16<<8; /* network order */
                 ip_copy.tot_len = tmp;
 
+                //TEST
+                tmp = tcp_copy.doff;
+                tmp -= 4;
+                tcp_copy.doff = tmp;
+
                 __builtin_memcpy(eth, &eth_copy, sizeof(eth_copy));
                 __builtin_memcpy(ip, &ip_copy, sizeof(ip_copy));
                 __builtin_memcpy(tcp, &tcp_copy, sizeof(tcp_copy));
@@ -213,12 +218,12 @@ int handle_ingress(struct xdp_md *ctx){
 
             ret = bpf_probe_read_kernel(buff, buff_len, cursor);
             if(ret!=0){
-                bpf_trace_printk("[GW][E] failed to read TCP's payload\n");
+                bpf_trace_printk("[GW][I] failed to read TCP's payload\n");
                 return XDP_PASS;
             }
 
             if(buff[0] == 'P' && buff[1] == 'O' && buff[2] == 'S' && buff[3] == 'T'){
-                bpf_trace_printk("[GW][E] Found HTTP POST request\n");
+                bpf_trace_printk("[GW][I] Found HTTP POST request\n");
 //          - check content of "Authorization" header
                 /* auth header should be third line of the HTTP request, each line separated by '\r\n'=0d0d=13 10 */
                 int counter = 0;
@@ -228,13 +233,13 @@ int handle_ingress(struct xdp_md *ctx){
                 for(i=0; i<buff_len && counter < 2; i++){
                     if(buff[i] == '\n' && buff[i-1] == '\r'){
                         counter++;
-                        bpf_trace_printk("[GW][E] Found end of line\n");
+                        bpf_trace_printk("[GW][I] Found end of line\n");
                     }
                 }
 
                 if(counter == 2 && i+12 < buff_len){
                     if(buff[i] == 'A' && buff[i+1] == 'u' && buff[i+2] == 't' && buff[i+3] == 'h' && buff[i+4] == 'o' && buff[i+5] == 'r' && buff[i+6] == 'i' && buff[i+7] == 'z' && buff[i+8] == 'a' && buff[i+9] == 't' && buff[i+10] == 'i' && buff[i+11] == 'o' && buff[i+12] == 'n'){
-                        bpf_trace_printk("[GW][E] Found Authorization header\n");
+                        bpf_trace_printk("[GW][I] Found Authorization header\n");
                         /*
                         ** 'Authorization: Basic ' >> 21 bytes offset
                         ** ||STRONG ASSUMPTION|| -> assume that first 16 bytes of the value are enough to uniquely identify the user/role
@@ -243,7 +248,7 @@ int handle_ingress(struct xdp_md *ctx){
                             for(int j=0; j<16; j++){
                                 auth_token[j] = buff[i+21+j];
                             }
-                            bpf_trace_printk("[GW][E] Found basic auth token: ");
+                            bpf_trace_printk("[GW][I] Found basic auth token: ");
                             for(int j=0; j<16; j++){
                                 bpf_trace_printk("%c (%d)", (char)auth_token[j], auth_token[j]);
                             }
@@ -446,6 +451,13 @@ int handle_egress(struct __sk_buff *skb){
                 int tmp = ip_copy.tot_len;
                 tmp += 16<<8;
                 ip_copy.tot_len = tmp;
+                
+                // TEST: add 16 bytes of tag to the TCP options
+                bpf_trace_printk("[GW][E] Initial TCP data offset: %d\n", tcp_copy.doff);
+                tmp = tcp_copy.doff;
+                tmp += 4;
+                tcp_copy.doff = tmp;
+                bpf_trace_printk("[GW][E] Modified TCP data offset: %d\n", tcp_copy.doff);
 
                 /* need recasting after bpf_skb_adjust_room */
                 data = (void *)(long)skb->data;
