@@ -18,6 +18,7 @@ struct label_hdr {
 };
 
 #define IP_TCP 6
+#define ETH_HDR 14
 #define LABEL_HEADER_LEN 9
 #define MAX_UDP_SIZE 1480
 

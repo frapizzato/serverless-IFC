@@ -15,11 +15,17 @@ def extract_cluster_ips():
     
     ret = v1.list_service_for_all_namespaces(watch=False)
     output = []
+    gw_svc = []
     for i in ret.items:
         #print("%s\t%s\t%s" % (i.spec.cluster_ip, i.metadata.namespace, i.metadata.name))
         if(i.spec.cluster_ip != "None"):
-            output.append(i.spec.cluster_ip)
-    return output
+            if(i.metadata.name == "gateway"):
+                gw_svc.append(i.spec.cluster_ip)
+            elif(i.metadata.name == "gateway-external"):
+                gw_svc.append(i.spec.cluster_ip)
+            else:
+                output.append(i.spec.cluster_ip)
+    return output, gw_svc
 
 def extract_pod_ips():
     config.load_kube_config()
@@ -48,7 +54,6 @@ def fill_bpf_allow_map(bpf_map, allowed_ips):
     for ip in allowed_ips:
         print(f"[+] Adding {ip} to allowed IPs")
         bpf_map[bpf_map.Key(ip_string_to_32bit_int(ip))] = bpf_map.Leaf(0)
-        sleep(1)
 
 def fill_bpf_tagged_map(bpf_map, tagged_ips):
     for ip in tagged_ips:
@@ -61,11 +66,15 @@ def ip_string_to_32bit_int(ip):
 
 #########################################
 
-cluster_ips = extract_cluster_ips()
+cluster_ips, gw_svc = extract_cluster_ips()
 pod_ips, gateway_pod_ips, tagged_pod_ips = extract_pod_ips()
 
 print("Cluster IPs:")
 for ip in cluster_ips:
+    print(ip)
+
+print("Gateway Service IPs:")
+for ip in gw_svc:
     print(ip)
 
 print("Pod IPs:")
@@ -96,6 +105,6 @@ tagsMap = bpf["tags_map"]
 allow_list = cluster_ips + pod_ips
 fill_bpf_allow_map(tagsMap, allow_list)
 
-tagged_list = tagged_pod_ips + gateway_pod_ips
+tagged_list = tagged_pod_ips + gateway_pod_ips + gw_svc
 fill_bpf_tagged_map(tagsMap, tagged_list)
 

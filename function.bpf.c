@@ -3,6 +3,7 @@
 
 #define HTTP_AND_LABEL_LEN 16+26 // 16 bytes for the label and 26 bytes for minimum HTTP payload (http://stackoverflow.com/questions/25047905/http-request-minimum-size-in-bytes)
 #define HTTP_LEN 26 // 26 bytes for minimum HTTP payload (http://stackoverflow.com/questions/25047905/http-request-minimum-size-in-bytes)
+#define DEBUG 0
 
 // Map to push label of the incoming request at gateway, and pop them when connection exit the gateway
 BPF_HASH(fifo, int, struct label_hdr, 1); 
@@ -59,7 +60,7 @@ int handle_ingress(struct xdp_md *ctx){
     u32 ip_header_length = ip->ihl << 2;
     u32 tcp_header_length = tcp->doff << 2;
     u32 payload_offset = sizeof(*eth) + ip_header_length + tcp_header_length;
-    u32 payload_length = bpf_ntohs(ip->tot_len) - ip_header_length + tcp_header_length;
+    u32 payload_length = bpf_ntohs(ip->tot_len) - ip_header_length - tcp_header_length;
     long ret;
     int key = 0;
 
@@ -102,11 +103,13 @@ int handle_ingress(struct xdp_md *ctx){
                 } else if(buff_HTTP[0] == 'H' && buff_HTTP[1] == 'E' && buff_HTTP[2] == 'A' && buff_HTTP[3] == 'D'){
                     bpf_trace_printk("[F][I] Found HTTP HEAD request\n");
                 } else {
-                    bpf_trace_printk("[F][I] NOT an HTTP message!\n");
+                    if(DEBUG)
+                        bpf_trace_printk("[F][I] NOT an HTTP message!\n");
                     return XDP_PASS;
                 }
 //              - extract the label from the packet, push it to the queue, - and enforce security policies (NOT IMPLEMENTED)
-                if(data + sizeof(*eth) + sizeof(*ip) + tcp_header_length + sizeof(*tag) > data_end){
+                //if(data + sizeof(*eth) + sizeof(*ip) + tcp_header_length + sizeof(*tag) > data_end){
+                if(data + sizeof(*eth) + sizeof(*ip) + tcp_header_length > data_end){ //TEST
                     return XDP_PASS;
                 }
 
@@ -159,9 +162,12 @@ int handle_ingress(struct xdp_md *ctx){
                 tcp = data + sizeof(*eth) + sizeof(*ip);
 
                 /* modify packet len information in the header to the new one (without LABEL) */
-                int tmp = ip_copy.tot_len;
-                tmp -= 16<<8; /* network order */
-                ip_copy.tot_len = tmp;
+                //int tmp = ip_copy.tot_len;
+                //tmp -= 16<<8; /* network order */
+                //ip_copy.tot_len = tmp;
+                int tmp = bpf_ntohs(ip_copy.tot_len);
+                tmp -= 16;
+                ip_copy.tot_len = bpf_htons(tmp);
 
                 //TEST
                 tmp = tcp_copy.doff;
@@ -238,9 +244,18 @@ int handle_egress(struct __sk_buff *skb){
     u32 ip_header_length = ip->ihl << 2;
     u32 tcp_header_length = tcp->doff << 2;
     u32 payload_offset = sizeof(*eth) + ip_header_length + tcp_header_length;
-    u32 payload_length = bpf_ntohs(ip->tot_len) - ip_header_length + tcp_header_length;
+    //u32 payload_length = bpf_ntohs(ip->tot_len) - ip_header_length - tcp_header_length;
+    u32 payload_length = skb->len - ip_header_length - tcp_header_length - ETH_HDR; //TEST
     long ret;
     int key = 0;
+    
+    if(DEBUG){
+        bpf_trace_printk("[F][E] total length: %d\n", skb->len);
+        bpf_trace_printk("[F][E] payload length: %d\n", payload_length);
+        bpf_trace_printk("[F][E] payload offset: %d\n", payload_offset);
+        bpf_trace_printk("[F][E] tcp header length: %d\n", tcp_header_length);
+        bpf_trace_printk("[F][E] ip header length: %d\n", ip_header_length);
+    }   
 
 //  - first check on packet destination, if it is GW or not
 //  - IF ip.dst IS internal (e.g., an OpenFaaS function) THEN:
@@ -248,6 +263,9 @@ int handle_egress(struct __sk_buff *skb){
     if(ip_decision != NULL){ /* pointer to value if IP exists in the map */
 //      - IF tagging(ip.dst) THEN:
         if(*ip_decision == 1){
+            if(DEBUG)
+                bpf_trace_printk("[F][E] Processing internal packet that has to be tagged\n");
+
 //          - could be either an HTTP message or a TCP one, but only HTTP has a LABEL. 
 //          - IF tcp.payload >= sizeof("HTTP ...") THEN:
             if(payload_length > HTTP_LEN){
@@ -266,8 +284,9 @@ int handle_egress(struct __sk_buff *skb){
                         }
                     } else {
                         // there is no non-linear part
-                        bpf_trace_printk("[F][E] Packet is too short\n");
-                        return TC_ACT_OK;
+                        //TEST
+                        //bpf_trace_printk("[F][E] Packet is too short\n");
+                        //return TC_ACT_OK;
                     }
                 }
 
@@ -306,7 +325,12 @@ int handle_egress(struct __sk_buff *skb){
                 } else if(buff_HTTP[0] == 'H' && buff_HTTP[1] == 'E' && buff_HTTP[2] == 'A' && buff_HTTP[3] == 'D'){
                     bpf_trace_printk("[F][E] Found HTTP HEAD request\n");
                 } else {
-                    bpf_trace_printk("[F][E] NOT an HTTP message!\n");
+                    if(DEBUG){
+                        bpf_trace_printk("[F][E] NOT an HTTP message!\n");
+                        for(int i = 0; i < 4; i++){
+                            bpf_trace_printk("[F][E] %c\n", buff_HTTP[i]);
+                        }
+                    }
                     return TC_ACT_OK;
                 }
 
@@ -320,8 +344,8 @@ int handle_egress(struct __sk_buff *skb){
                 }
 
                 //TEST: create custom tag
-                tag->label = 42;
-                tag->timestamp = 0;
+                tag->label = 0;
+                tag->timestamp = 42;
                 bpf_trace_printk("[F][E] updated label: {%d, %d}\n", tag->label, tag->timestamp);
 
                 // modify the packet
@@ -337,71 +361,87 @@ int handle_egress(struct __sk_buff *skb){
 
                 inner_ret = bpf_skb_load_bytes(skb, 0, &eth_copy, sizeof(eth_copy));
                 if(inner_ret){
+                    bpf_trace_printk("[F][E] failed to load eth\n");
                     return TC_ACT_SHOT;
                 }
                 
                 inner_ret = bpf_skb_load_bytes(skb, sizeof(*eth), &ip_copy, sizeof(ip_copy));
                 if(inner_ret){
+                    bpf_trace_printk("[F][E] failed to load ip\n");
                     return TC_ACT_SHOT;
                 }
 
                 inner_ret = bpf_skb_load_bytes(skb, sizeof(*eth) + sizeof(*ip), &tcp_copy, sizeof(tcp_copy));
                 if(inner_ret){
+                    bpf_trace_printk("[F][E] failed to load tcp\n");
                     return TC_ACT_SHOT;
                 }
 
                 u8 opts[12];
                 ret = bpf_skb_load_bytes(skb, sizeof(*eth) + sizeof(*ip) + sizeof(*tcp), &opts[0], 12);
                 if(ret){
+                    bpf_trace_printk("[F][E] failed to load opts\n");
                     return TC_ACT_SHOT;
                 }
 
                 inner_ret = bpf_skb_adjust_room(skb, 16, BPF_ADJ_ROOM_MAC, BPF_F_ADJ_ROOM_FIXED_GSO);
                 if(inner_ret){
+                    bpf_trace_printk("[F][E] failed to adjust room\n");
                     return TC_ACT_SHOT;
                 }
 
-                int tmp = ip_copy.tot_len;
-                tmp += 16<<8;
-                ip_copy.tot_len = tmp;
+                //int tmp = ip_copy.tot_len;
+                //tmp += 16<<8;
+                //ip_copy.tot_len = tmp;
+                int tmp = bpf_ntohs(ip_copy.tot_len);
+                tmp += 16;
+                ip_copy.tot_len = bpf_htons(tmp);
 
                 //TEST: add 16 bytes of tag to the TCP options
-                bpf_trace_printk("[F][E] Initial TCP data offset: %d\n", tcp_copy.doff);
+                if(DEBUG)
+                    bpf_trace_printk("[F][E] Initial TCP data offset: %d\n", tcp_copy.doff);
                 tmp = tcp_copy.doff;
                 tmp += 4;
                 tcp_copy.doff = tmp;
-                bpf_trace_printk("[F][E] New TCP data offset: %d\n", tcp_copy.doff);
+                if(DEBUG)
+                    bpf_trace_printk("[F][E] New TCP data offset: %d\n", tcp_copy.doff);
 
                 /* need recasting after bpf_skb_adjust_room */
                 data = (void *)(long)skb->data;
                 data_end = (void *)(long)skb->data_end;
 
                 if(data + sizeof(*eth) + sizeof(*ip) + sizeof(*tcp) + 12 + sizeof(tag) > data_end){
+                    bpf_trace_printk("[F][E] Packet is too short\n");
                     return TC_ACT_SHOT;
                 }
 
                 inner_ret = bpf_skb_store_bytes(skb, 0, &eth_copy, sizeof(eth_copy), 0);
                 if(inner_ret){
+                    bpf_trace_printk("[F][E] failed to store eth\n");
                     return TC_ACT_SHOT;
                 }
 
                 inner_ret = bpf_skb_store_bytes(skb, sizeof(*eth), &ip_copy, sizeof(ip_copy), 0);
                 if(inner_ret){
+                    bpf_trace_printk("[F][E] failed to store ip\n");
                     return TC_ACT_SHOT;
                 }
 
                 inner_ret = bpf_skb_store_bytes(skb, sizeof(*eth) + sizeof(*ip), &tcp_copy, sizeof(tcp_copy), 0);
                 if(inner_ret){
+                    bpf_trace_printk("[F][E] failed to store tcp\n");
                     return TC_ACT_SHOT;
                 }
 
                 inner_ret = bpf_skb_store_bytes(skb, sizeof(*eth) + sizeof(*ip) + sizeof(*tcp), &opts, sizeof(opts), 0);
                 if(inner_ret){
+                    bpf_trace_printk("[F][E] failed to store opts\n");
                     return TC_ACT_SHOT;
                 }
 
                 inner_ret = bpf_skb_store_bytes(skb, sizeof(*eth) + sizeof(*ip) + sizeof(*tcp) + sizeof(opts), tag, sizeof(*tag), 0);
                 if(inner_ret){
+                    bpf_trace_printk("[F][E] failed to store tag\n");
                     return TC_ACT_SHOT;
                 }
                 
@@ -417,26 +457,34 @@ int handle_egress(struct __sk_buff *skb){
                     return TC_ACT_OK;
                 }
                 ip = data + sizeof(*eth);
+/*
                 if(data + sizeof(*eth) + sizeof(*ip) + sizeof(*tcp) > data_end){
                     return TC_ACT_OK;
                 }
                 tcp = data + sizeof(*eth) + sizeof(*ip);
-
+*/        
+                bpf_trace_printk("[F][E] updating checksum\n");
                 ip->check = 0;
                 __u64 csum = 0;
                 ipv4_csum(ip, sizeof(*ip), &csum);
                 ip->check = csum;
-
+                
+                bpf_trace_printk("[F][E] forwarding modified packet\n");
                 return TC_ACT_OK;                
 //          - ELSE: forward the packet (??) - eventually process TCP packets
             } else {
+                bpf_trace_printk("[F][E] Packet payload not long enough to contain HTTP\n");
                 return TC_ACT_OK;
             }   
         }
 //      - ELSE: forward the packet (??)
         else {
+            bpf_trace_printk("[F][E] Packet does not need to be tagged (IP.decision %d, IP %lu)\n", *ip_decision, ip->daddr);
             return TC_ACT_OK;
         }
     }
+
+    if(DEBUG)
+        bpf_trace_printk("[F][E] Packet is external (IP.decision %d)\n", *ip_decision);
     return TC_ACT_OK;
 }
