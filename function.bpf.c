@@ -1,10 +1,6 @@
 #include "common.h"
 
 
-#define HTTP_AND_LABEL_LEN 16+26 // 16 bytes for the label and 26 bytes for minimum HTTP payload (http://stackoverflow.com/questions/25047905/http-request-minimum-size-in-bytes)
-#define HTTP_LEN 26 // 26 bytes for minimum HTTP payload (http://stackoverflow.com/questions/25047905/http-request-minimum-size-in-bytes)
-#define DEBUG 0
-
 // Map to push label of the incoming request at gateway, and pop them when connection exit the gateway
 BPF_HASH(fifo, int, struct label_hdr, 1); 
 /* BPF_QUEUE map would have been better choice but not supported in XPD - Oct' 2024 */
@@ -64,17 +60,22 @@ int handle_ingress(struct xdp_md *ctx){
     long ret;
     int key = 0;
 
-//  - first check on packet source, if it is the GW or not
-//  - IF ip.src IS internal (e.g., an OpenFaaS function) THEN:
+    //TEST
+    if(1){
+        bpf_trace_printk("[F][I] total length: %d\n", data_end - data);
+        bpf_trace_printk("[F][I] payload length: %d\n", payload_length);
+        bpf_trace_printk("[F][I] payload offset: %d\n", payload_offset);
+        bpf_trace_printk("[F][I] tcp header length: %d (sizeof TCP: %d)\n", tcp_header_length, sizeof(*tcp));
+        bpf_trace_printk("[F][I] ip header length: %d (sizeof IP: %d)\n", ip_header_length, sizeof(*ip));
+    }
+
+//  check packet source, if it is the GW or not, and if it needs to be tagged
     int *ip_decision = tags_map.lookup(&ip->saddr);
     if(ip_decision != NULL){
-//      - IF tagging(ip.src) THEN:
         if(*ip_decision == 1){
-//          - could be either an HTTP message or a TCP one, but only HTTP has a LABEL. 
-//          - IF tcp.payload >= sizeof(LABEL) + sizeof("HTTP ...") THEN:
+//  check if it is an HTTP message
             if(payload_length > HTTP_AND_LABEL_LEN){
-//              - check if it is indeed an HTTP response or request (i.e., either "HTTP ..." or "GET..." or "POST.. " or "PUT..." or "DELETE..." or "PATCH..." or "OPTIONS..." or "HEAD...")
-                u8 *cursor_HTTP = data + payload_offset; //TEST + 16; /* skip the label */
+                u8 *cursor_HTTP = data + payload_offset;
                 int buff_len_HTTP = 4;
                 u8 buff_HTTP[4];
                 ret = bpf_probe_read_kernel(buff_HTTP, buff_len_HTTP, cursor_HTTP);
@@ -107,15 +108,19 @@ int handle_ingress(struct xdp_md *ctx){
                         bpf_trace_printk("[F][I] NOT an HTTP message!\n");
                     return XDP_PASS;
                 }
-//              - extract the label from the packet, push it to the queue, - and enforce security policies (NOT IMPLEMENTED)
-                //if(data + sizeof(*eth) + sizeof(*ip) + tcp_header_length + sizeof(*tag) > data_end){
-                if(data + sizeof(*eth) + sizeof(*ip) + tcp_header_length > data_end){ //TEST
+//  extract the label from the packet, push it to the local storage, - and enforce security policies (NOT IMPLEMENTED)
+                //if(data + sizeof(*eth) + sizeof(*ip) + tcp_header_length > data_end){
+                if(data + sizeof(*eth) + sizeof(*ip) + sizeof(*tcp) + 12 + sizeof(*tag) > data_end){
                     return XDP_PASS;
                 }
 
-                tag = data + sizeof(*eth) + sizeof(*ip) + tcp_header_length - sizeof(*tag); //TEST -> now the doff points after tag!
-                bpf_trace_printk("[F][I] received label: {%d, %d}\n", tag->label, tag->timestamp);
-
+                //tag = data + sizeof(*eth) + sizeof(*ip) + tcp_header_length - sizeof(*tag);
+                tag = data + sizeof(*eth) + sizeof(*ip) + sizeof(*tcp) + 12;
+                bpf_trace_printk("[F][I] received label. Id = %u, F_CNT = %u, LABELS = [", tag->id_label, tag->f_counter);
+                for(int k=0; k<6; k++){
+                    bpf_trace_printk("%hhu%hhu%hhu", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
+                }
+                bpf_trace_printk("]}.\n");
                 ret = fifo.update(&key, tag);
 
                 /*
@@ -137,7 +142,7 @@ int handle_ingress(struct xdp_md *ctx){
                     return XDP_PASS;
                 }
 
-                ret = bpf_xdp_adjust_head(ctx, 16); /* move xdp_md.data to the right by 16 bytes (len of tag) */
+                ret = bpf_xdp_adjust_head(ctx, LABEL_LEN); /* move xdp_md.data to the right by 36 bytes (len of tag) */
                 if(ret != 0){ 
                     bpf_trace_printk("[F][I] failed to adjust head\n");
                     return XDP_DROP;
@@ -162,16 +167,12 @@ int handle_ingress(struct xdp_md *ctx){
                 tcp = data + sizeof(*eth) + sizeof(*ip);
 
                 /* modify packet len information in the header to the new one (without LABEL) */
-                //int tmp = ip_copy.tot_len;
-                //tmp -= 16<<8; /* network order */
-                //ip_copy.tot_len = tmp;
                 int tmp = bpf_ntohs(ip_copy.tot_len);
-                tmp -= 16;
+                tmp -= LABEL_LEN;
                 ip_copy.tot_len = bpf_htons(tmp);
 
-                //TEST
                 tmp = tcp_copy.doff;
-                tmp -= 4;
+                tmp -= LABEL_LEN_32b;
                 tcp_copy.doff = tmp;
 
                 __builtin_memcpy(eth, &eth_copy, sizeof(eth_copy));
@@ -193,7 +194,6 @@ int handle_ingress(struct xdp_md *ctx){
 
                 bpf_trace_printk("[F][I] forwarding modified packet\n");
                 return XDP_PASS;
-//          - ELSE: forward the packet (??) - eventually process TCP packets
             }
         }
     }
@@ -244,8 +244,7 @@ int handle_egress(struct __sk_buff *skb){
     u32 ip_header_length = ip->ihl << 2;
     u32 tcp_header_length = tcp->doff << 2;
     u32 payload_offset = sizeof(*eth) + ip_header_length + tcp_header_length;
-    //u32 payload_length = bpf_ntohs(ip->tot_len) - ip_header_length - tcp_header_length;
-    u32 payload_length = skb->len - ip_header_length - tcp_header_length - ETH_HDR; //TEST
+    u32 payload_length = skb->len - ip_header_length - tcp_header_length - ETH_HDR;
     long ret;
     int key = 0;
     
@@ -257,19 +256,15 @@ int handle_egress(struct __sk_buff *skb){
         bpf_trace_printk("[F][E] ip header length: %d\n", ip_header_length);
     }   
 
-//  - first check on packet destination, if it is GW or not
-//  - IF ip.dst IS internal (e.g., an OpenFaaS function) THEN:
+//  check on packet destination, if it is GW or not, and if it needs to be tagged
     int *ip_decision = tags_map.lookup(&ip->daddr); 
-    if(ip_decision != NULL){ /* pointer to value if IP exists in the map */
-//      - IF tagging(ip.dst) THEN:
+    if(ip_decision != NULL){ 
         if(*ip_decision == 1){
             if(DEBUG)
                 bpf_trace_printk("[F][E] Processing internal packet that has to be tagged\n");
 
-//          - could be either an HTTP message or a TCP one, but only HTTP has a LABEL. 
-//          - IF tcp.payload >= sizeof("HTTP ...") THEN:
+//  check if it is an HTTP message
             if(payload_length > HTTP_LEN){
-//              - check if it is indeed an HTTP response or request (i.e., either "HTTP ..." or "GET..." or "POST.. " or "PUT..." or "DELETE..." or "PATCH..." or "OPTIONS..." or "HEAD...")
                 
                 /*
                 ** Since we are working with SKB, it could be that not all data is accessible trough the pointers (linear part). 
@@ -327,28 +322,54 @@ int handle_egress(struct __sk_buff *skb){
                 } else {
                     if(DEBUG){
                         bpf_trace_printk("[F][E] NOT an HTTP message!\n");
-                        for(int i = 0; i < 4; i++){
-                            bpf_trace_printk("[F][E] %c\n", buff_HTTP[i]);
-                        }
                     }
                     return TC_ACT_OK;
                 }
 
-//              - extract the label from the queue, enforce security policies (NOT IMPLEMENTED), and add label to the packet
+//  extract the label from the local storage, enforce security policies (NOT IMPLEMENTED), and add label to the packet
                 tag = fifo.lookup(&key);
                 if(tag){
-                    bpf_trace_printk("[F][E] popped label: {%d, %d}\n", tag->label, tag->timestamp);
+                    bpf_trace_printk("[F][E] popped label. Id = %u, F_CNT = %u, LABELS = [", tag->id_label, tag->f_counter);
+                    for(int k=0; k<6; k++){
+                        bpf_trace_printk("%hhu%hhu%hhu", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
+                    }
+                    bpf_trace_printk("]}.\n");
                 } else {
                     bpf_trace_printk("[F][E] failed to pop label from the queue\n");
                     return TC_ACT_SHOT;
                 }
 
-                //TEST: create custom tag
-                tag->label = 0;
-                tag->timestamp = 42;
-                bpf_trace_printk("[F][E] updated label: {%d, %d}\n", tag->label, tag->timestamp);
+//  modify the tag
+                /*
+                ** IDEA: check the function counter, write the function label on the label list, increment counter
+                */
+                int value_f_counter = tag->f_counter & 0x7; // consider only 3 bits
+                unsigned int function_tag = 42;
+                struct custom_24b function_tag_24;
+                if(function_tag > 0xFFFFFF){
+                    bpf_trace_printk("[F][E] function tag is too big\n");
+                    return TC_ACT_SHOT;
+                }
+                function_tag_24.value[2] = (function_tag >> 16) & 0xFF;
+                function_tag_24.value[1] = (function_tag >> 8) & 0xFF;
+                function_tag_24.value[0] = function_tag & 0xFF;
 
-                // modify the packet
+                
+
+                if(value_f_counter < 6){
+                    tag->label[value_f_counter] = function_tag_24;
+                    tag->f_counter = value_f_counter + 1;
+                } else { // TEST: what to do?
+                    return TC_ACT_SHOT;
+                }
+                
+                
+                bpf_trace_printk("[F][E] updated label. Id = %u, F_CNT = %u, LABELS = [", tag->id_label, tag->f_counter);
+                for(int k=0; k<6; k++){
+                    bpf_trace_printk("%hhu%hhu%hhu", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
+                }
+                bpf_trace_printk("]}.\n");
+// modify the packet
                 struct ethhdr eth_copy;
                 struct iphdr ip_copy;
                 struct tcphdr tcp_copy;
@@ -384,24 +405,21 @@ int handle_egress(struct __sk_buff *skb){
                     return TC_ACT_SHOT;
                 }
 
-                inner_ret = bpf_skb_adjust_room(skb, 16, BPF_ADJ_ROOM_MAC, BPF_F_ADJ_ROOM_FIXED_GSO);
+                inner_ret = bpf_skb_adjust_room(skb, LABEL_LEN, BPF_ADJ_ROOM_MAC, BPF_F_ADJ_ROOM_FIXED_GSO);
                 if(inner_ret){
                     bpf_trace_printk("[F][E] failed to adjust room\n");
                     return TC_ACT_SHOT;
                 }
 
-                //int tmp = ip_copy.tot_len;
-                //tmp += 16<<8;
-                //ip_copy.tot_len = tmp;
+
                 int tmp = bpf_ntohs(ip_copy.tot_len);
-                tmp += 16;
+                tmp += LABEL_LEN;
                 ip_copy.tot_len = bpf_htons(tmp);
 
-                //TEST: add 16 bytes of tag to the TCP options
                 if(DEBUG)
                     bpf_trace_printk("[F][E] Initial TCP data offset: %d\n", tcp_copy.doff);
                 tmp = tcp_copy.doff;
-                tmp += 4;
+                tmp += LABEL_LEN_32b;
                 tcp_copy.doff = tmp;
                 if(DEBUG)
                     bpf_trace_printk("[F][E] New TCP data offset: %d\n", tcp_copy.doff);
@@ -457,12 +475,12 @@ int handle_egress(struct __sk_buff *skb){
                     return TC_ACT_OK;
                 }
                 ip = data + sizeof(*eth);
-/*
+
                 if(data + sizeof(*eth) + sizeof(*ip) + sizeof(*tcp) > data_end){
                     return TC_ACT_OK;
                 }
                 tcp = data + sizeof(*eth) + sizeof(*ip);
-*/        
+        
                 bpf_trace_printk("[F][E] updating checksum\n");
                 ip->check = 0;
                 __u64 csum = 0;
@@ -471,14 +489,11 @@ int handle_egress(struct __sk_buff *skb){
                 
                 bpf_trace_printk("[F][E] forwarding modified packet\n");
                 return TC_ACT_OK;                
-//          - ELSE: forward the packet (??) - eventually process TCP packets
             } else {
                 bpf_trace_printk("[F][E] Packet payload not long enough to contain HTTP\n");
                 return TC_ACT_OK;
             }   
-        }
-//      - ELSE: forward the packet (??)
-        else {
+        } else {
             bpf_trace_printk("[F][E] Packet does not need to be tagged (IP.decision %d, IP %lu)\n", *ip_decision, ip->daddr);
             return TC_ACT_OK;
         }
