@@ -60,8 +60,7 @@ int handle_ingress(struct xdp_md *ctx){
     long ret;
     int key = 0;
 
-    //TEST
-    if(1){
+    if(DEBUG){
         bpf_trace_printk("[F][I] total length: %d\n", data_end - data);
         bpf_trace_printk("[F][I] payload length: %d\n", payload_length);
         bpf_trace_printk("[F][I] payload offset: %d\n", payload_offset);
@@ -111,6 +110,7 @@ int handle_ingress(struct xdp_md *ctx){
 //  extract the label from the packet, push it to the local storage, - and enforce security policies (NOT IMPLEMENTED)
                 //if(data + sizeof(*eth) + sizeof(*ip) + tcp_header_length > data_end){
                 if(data + sizeof(*eth) + sizeof(*ip) + sizeof(*tcp) + 12 + sizeof(*tag) > data_end){
+                    bpf_trace_printk("[F][I] Packet is too short to have tag\n");
                     return XDP_PASS;
                 }
 
@@ -118,7 +118,7 @@ int handle_ingress(struct xdp_md *ctx){
                 tag = data + sizeof(*eth) + sizeof(*ip) + sizeof(*tcp) + 12;
                 bpf_trace_printk("[F][I] received label. Id = %u, F_CNT = %u, LABELS = [", tag->id_label, tag->f_counter);
                 for(int k=0; k<6; k++){
-                    bpf_trace_printk("%hhu%hhu%hhu", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
+                    bpf_trace_printk("|%u%u%u|", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
                 }
                 bpf_trace_printk("]}.\n");
                 ret = fifo.update(&key, tag);
@@ -192,7 +192,8 @@ int handle_ingress(struct xdp_md *ctx){
                 ipv4_csum(ip, sizeof(*ip), &csum);
                 ip->check = csum;
 
-                bpf_trace_printk("[F][I] forwarding modified packet\n");
+                if(DEBUG)
+                    bpf_trace_printk("[F][I] forwarding modified packet\n");
                 return XDP_PASS;
             }
         }
@@ -331,7 +332,7 @@ int handle_egress(struct __sk_buff *skb){
                 if(tag){
                     bpf_trace_printk("[F][E] popped label. Id = %u, F_CNT = %u, LABELS = [", tag->id_label, tag->f_counter);
                     for(int k=0; k<6; k++){
-                        bpf_trace_printk("%hhu%hhu%hhu", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
+                        bpf_trace_printk("|%u%u%u|", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
                     }
                     bpf_trace_printk("]}.\n");
                 } else {
@@ -344,7 +345,7 @@ int handle_egress(struct __sk_buff *skb){
                 ** IDEA: check the function counter, write the function label on the label list, increment counter
                 */
                 int value_f_counter = tag->f_counter & 0x7; // consider only 3 bits
-                unsigned int function_tag = 42;
+                unsigned int function_tag = 42<<16;
                 struct custom_24b function_tag_24;
                 if(function_tag > 0xFFFFFF){
                     bpf_trace_printk("[F][E] function tag is too big\n");
@@ -366,7 +367,7 @@ int handle_egress(struct __sk_buff *skb){
                 
                 bpf_trace_printk("[F][E] updated label. Id = %u, F_CNT = %u, LABELS = [", tag->id_label, tag->f_counter);
                 for(int k=0; k<6; k++){
-                    bpf_trace_printk("%hhu%hhu%hhu", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
+                    bpf_trace_printk("|%u%u%u|", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
                 }
                 bpf_trace_printk("]}.\n");
 // modify the packet
@@ -481,20 +482,24 @@ int handle_egress(struct __sk_buff *skb){
                 }
                 tcp = data + sizeof(*eth) + sizeof(*ip);
         
-                bpf_trace_printk("[F][E] updating checksum\n");
+                if(DEBUG)
+                    bpf_trace_printk("[F][E] updating checksum\n");
                 ip->check = 0;
                 __u64 csum = 0;
                 ipv4_csum(ip, sizeof(*ip), &csum);
                 ip->check = csum;
                 
-                bpf_trace_printk("[F][E] forwarding modified packet\n");
+                if(DEBUG)
+                    bpf_trace_printk("[F][E] forwarding modified packet\n");
                 return TC_ACT_OK;                
             } else {
-                bpf_trace_printk("[F][E] Packet payload not long enough to contain HTTP\n");
+                if(DEBUG)
+                    bpf_trace_printk("[F][E] Packet payload not long enough to contain HTTP\n");
                 return TC_ACT_OK;
             }   
         } else {
-            bpf_trace_printk("[F][E] Packet does not need to be tagged (IP.decision %d, IP %lu)\n", *ip_decision, ip->daddr);
+            if(DEBUG)
+                bpf_trace_printk("[F][E] Packet does not need to be tagged (IP.decision %d, IP %lu)\n", *ip_decision, ip->daddr);
             return TC_ACT_OK;
         }
     }

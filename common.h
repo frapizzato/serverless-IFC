@@ -12,9 +12,15 @@
 #include <net/sock.h> /* definition of struct sock */
 #include <net/inet_sock.h> /* definition of struct inet_sock */
 
+struct custom_24b {
+    __u8    value[3];
+};
+
 struct label_hdr {
-    __u64 label;
-    __u64 timestamp;
+    __u16               init_sequence:13,
+                        f_counter:3;
+    __u32               id_label;
+    struct custom_24b   label[6]; // 144 bits --> accessed in "groups-of-3". Is an array of 6 24-bit words
 };
 
 #define IP_TCP 6
@@ -22,6 +28,11 @@ struct label_hdr {
 #define LABEL_HEADER_LEN 9
 #define MAX_UDP_SIZE 1480
 
+#define LABEL_LEN 28 //36
+#define LABEL_LEN_32b 7 //9 // 36B / 4 = 9 32-bit words
+#define HTTP_AND_LABEL_LEN 28+26//36+26 // 36 bytes for the label and 26 bytes for minimum HTTP payload (http://stackoverflow.com/questions/25047905/http-request-minimum-size-in-bytes)
+#define HTTP_LEN 26 // 26 bytes for minimum HTTP payload (http://stackoverflow.com/questions/25047905/http-request-minimum-size-in-bytes)
+#define DEBUG 0
 
 /*
 **  Function to recompute TCP checksum

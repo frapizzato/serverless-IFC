@@ -69,8 +69,7 @@ int handle_ingress(struct xdp_md *ctx){
     long ret;
     int key = 0;
 
-    //TEST
-    if(1){
+    if(DEBUG){
         bpf_trace_printk("[GW][I] total length: %d\n", data_end - data);
         bpf_trace_printk("[GW][I] payload length: %d\n", payload_length);
         bpf_trace_printk("[GW][I] payload offset: %d\n", payload_offset);
@@ -137,7 +136,7 @@ int handle_ingress(struct xdp_md *ctx){
 
                 bpf_trace_printk("[GW][I] received label. Id = %u, F_CNT = %u, LABELS = [", tag->id_label, tag->f_counter);
                 for(int k=0; k<6; k++){
-                    bpf_trace_printk("%u%u%u", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
+                    bpf_trace_printk("|%u%u%u|", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
                 }
                 bpf_trace_printk("]}.\n");
 
@@ -189,12 +188,12 @@ int handle_ingress(struct xdp_md *ctx){
                 tmp -= LABEL_LEN;
                 ip_copy.tot_len = bpf_htons(tmp);
 
-                if(1)
+                if(DEBUG)
                     bpf_trace_printk("[GW][I] Initial TCP data offset: %d\n", tcp_copy.doff);
                 tmp = tcp_copy.doff;
                 tmp -= LABEL_LEN_32b;
                 tcp_copy.doff = tmp;
-                if(1)
+                if(DEBUG)
                     bpf_trace_printk("[GW][I] New TCP data offset: %d\n", tcp_copy.doff);
 
                 __builtin_memcpy(eth, &eth_copy, sizeof(eth_copy));
@@ -214,7 +213,8 @@ int handle_ingress(struct xdp_md *ctx){
                 ipv4_csum(ip, sizeof(*ip), &csum);
                 ip->check = csum;
 
-                bpf_trace_printk("[GW][I] forwarding modified packet\n");
+                if(DEBUG)
+                    bpf_trace_printk("[GW][I] forwarding modified packet\n");
                 return XDP_PASS;
             } else {
                 return XDP_PASS;
@@ -277,7 +277,7 @@ int handle_ingress(struct xdp_md *ctx){
                                 if(DEBUG){
                                     bpf_trace_printk("[GW][I] Found label. Id = %u, F_CNT = %u, LABELS = [", tag->id_label, tag->f_counter);
                                     for(int k=0; k<6; k++){
-                                        bpf_trace_printk("%u%u%u", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
+                                        bpf_trace_printk("|%u%u%u|", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
                                     }
                                     bpf_trace_printk("]}.\n");
                                 }
@@ -297,7 +297,7 @@ int handle_ingress(struct xdp_md *ctx){
                             }
                             bpf_trace_printk("[GW][I] pushing label. Id = %u, F_CNT = %u, LABELS = [", tag->id_label, tag->f_counter);
                             for(int k=0; k<6; k++){
-                                bpf_trace_printk("%u%u%u", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
+                                bpf_trace_printk("|%u%u%u|", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
                             }
                             bpf_trace_printk("]}.\n");      
                             
@@ -440,7 +440,7 @@ int handle_egress(struct __sk_buff *skb){
                 if(tag){
                     bpf_trace_printk("[GW][E] popped label. Id = %u, F_CNT = %u, LABELS = [", tag->id_label, tag->f_counter);
                     for(int k=0; k<6; k++){
-                        bpf_trace_printk("%u%u%u", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
+                        bpf_trace_printk("|%u%u%u|", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
                     }
                     bpf_trace_printk("]}.\n");
                 } else {
@@ -476,7 +476,7 @@ int handle_egress(struct __sk_buff *skb){
                 
                 bpf_trace_printk("[GW][E] updated label. Id = %u, F_CNT = %u, LABELS = [", tag->id_label, tag->f_counter);
                 for(int k=0; k<6; k++){
-                    bpf_trace_printk("%u%u%u", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
+                    bpf_trace_printk("|%u%u%u|", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
                 }
                 bpf_trace_printk("]}.\n");
                 
@@ -527,12 +527,12 @@ int handle_egress(struct __sk_buff *skb){
                 tmp += LABEL_LEN;
                 ip_copy.tot_len = bpf_htons(tmp);
                 
-                if(1)
+                if(DEBUG)
                     bpf_trace_printk("[GW][E] Initial TCP data offset: %d\n", tcp_copy.doff);
                 tmp = tcp_copy.doff;
                 tmp += LABEL_LEN_32b;
                 tcp_copy.doff = tmp;
-                if(1)
+                if(DEBUG)
                     bpf_trace_printk("[GW][E] Modified TCP data offset: %d\n", tcp_copy.doff);
 
                 /* need recasting after bpf_skb_adjust_room */
@@ -596,7 +596,8 @@ int handle_egress(struct __sk_buff *skb){
                 ipv4_csum(ip, sizeof(*ip), &csum);
                 ip->check = csum;
                 
-                bpf_trace_printk("[GW][E] forwarding modified packet\n");
+                if(DEBUG)
+                    bpf_trace_printk("[GW][E] forwarding modified packet\n");
                 return TC_ACT_OK;                
             } else {
                 return TC_ACT_OK;
