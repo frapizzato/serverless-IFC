@@ -14,6 +14,12 @@ BPF_HASH(auth_map, struct key_t, struct label_hdr, 100);
 // Map to check if a flow should be tagged or not - and if the IP is "allowed" (i.e., internal one) or not (i.e., external one)
 BPF_TABLE_PINNED("hash", int, int, tags_map, 1024, "/sys/fs/bpf/tags");
 
+// Map to retrieve the label associated with the function's pod
+struct string_key {
+    __u8    value[63];
+};        
+BPF_TABLE_PINNED("hash", struct string_key, u32, pod_tags_map, 1024, "/sys/fs/bpf/pod_tags");
+
 /*
 ** INGRESS TRAFFIC (XDP):
 **  - first check on packet source, if it is the GW or not
@@ -218,6 +224,8 @@ int handle_egress(struct __sk_buff *skb){
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
 
+    char whoAmI[]="POD_NAME";
+
     struct ethhdr *eth = data;
     struct iphdr *ip;
     struct tcphdr *tcp;
@@ -345,12 +353,41 @@ int handle_egress(struct __sk_buff *skb){
                 ** IDEA: check the function counter, write the function label on the label list, increment counter
                 */
                 int value_f_counter = tag->f_counter & 0x7; // consider only 3 bits
-                unsigned int function_tag = 42<<16;
+                // retrieve tags using the function name (padded to 63 bytes with 0)
+                struct string_key key_pod;
+                __builtin_memset(key_pod.value, 0, sizeof(key_pod.value));
+                
+                for(int k=0; k<sizeof(whoAmI); k++){
+                    if(k < sizeof(key_pod.value))
+                        key_pod.value[k] = whoAmI[k];
+                }
+                
+                //__builtin_memcpy(key_pod.value, whoAmI, sizeof(whoAmI));
+                bpf_trace_printk("[F][E] Looking for tag for the function with key:\n");
+                for(int k=0; k<63; k++){
+                    bpf_trace_printk("%c", key_pod.value[k]);
+                }
+                
+                u32 *value_pod = pod_tags_map.lookup(&key_pod);
+
+                if(value_pod){
+                    bpf_trace_printk("[F][E] Found tag for the function\n");
+                } else {
+                    bpf_trace_printk("[F][E] Tag not found for the function\n");
+                    return TC_ACT_SHOT;
+                }
+
+                u32 value_tmp = *value_pod;
+                bpf_trace_printk("[F][E] Found tag for the function (%u)\n", value_tmp);
+                
+                u32 function_tag = (*value_pod) & 0xFFFFFF; //only care about 24 bits
                 struct custom_24b function_tag_24;
+                /*
                 if(function_tag > 0xFFFFFF){
                     bpf_trace_printk("[F][E] function tag is too big\n");
                     return TC_ACT_SHOT;
                 }
+                */
                 function_tag_24.value[2] = (function_tag >> 16) & 0xFF;
                 function_tag_24.value[1] = (function_tag >> 8) & 0xFF;
                 function_tag_24.value[0] = function_tag & 0xFF;

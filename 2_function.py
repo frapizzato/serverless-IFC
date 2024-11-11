@@ -2,7 +2,9 @@
 from bcc import BPF
 import pyroute2
 from time import sleep
-
+import re
+import argparse
+import os
 
 #########################################
 def clean_up_tc(interface):
@@ -21,8 +23,31 @@ def clean_up_tc(interface):
         pass
 #########################################
 
+file_path = "function.bpf.c"
+OLD_VARIABLE = "POD_NAME"
 
-b = BPF(src_file="function.bpf.c")
+# Parse the arguments
+parser = argparse.ArgumentParser(description="Program to load eBPF code inside a Pod network ns. Accept as argument the Pod name, to dynamically modify the eBPF code.")
+parser.add_argument("NEW_VARIABLE", help="The name of the Pod to inject into eBPF code.")
+
+args = parser.parse_args()
+
+# Read the eBPF c file
+with open(file_path, "r") as f:
+    code = f.read()
+
+# Replace the POD_NAME variable with the Pod name, using regex
+code_modified = re.sub(r'\b' + re.escape(OLD_VARIABLE) + r'\b', args.NEW_VARIABLE, code)
+
+# Create a new file with the modified code
+new_file_path = "function_" + args.NEW_VARIABLE + ".bpf.c"
+
+# Write the modified code back to the C file
+with open(new_file_path, "w") as f:
+    f.write(code_modified)
+
+#b = BPF(src_file="function.bpf.c")
+b = BPF(src_file=new_file_path)
 
 interface = "eth0"
 
@@ -47,6 +72,7 @@ while 1:
     try:
         sleep(1)
     except KeyboardInterrupt:
+        os.remove(new_file_path)
         b.remove_xdp(interface, 0)
         clean_up_tc(interface)
         exit(0)

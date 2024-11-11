@@ -456,6 +456,7 @@ int handle_egress(struct __sk_buff *skb){
                 /*
                 ** IDEA: check the function counter, write the GW tag on the label list, increment counter
                 */
+                /*
                 int value_f_counter = tag->f_counter & 0x7; // consider only 3 bits
                 unsigned int gw_tag = 16777215;
                 struct custom_24b gw_tag_24;
@@ -479,7 +480,7 @@ int handle_egress(struct __sk_buff *skb){
                     bpf_trace_printk("|%u%u%u|", tag->label[k].value[0], tag->label[k].value[1], tag->label[k].value[2]);
                 }
                 bpf_trace_printk("]}.\n");
-                
+                */
 // modify the packet
                 struct ethhdr eth_copy;
                 struct iphdr ip_copy;
