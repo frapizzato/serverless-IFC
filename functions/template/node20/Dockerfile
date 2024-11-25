@@ -23,11 +23,16 @@ RUN mkdir -p /home/app/function
 WORKDIR /home/app
 COPY --chown=app:app package.json ./
 
+COPY --chown=app:app ./server.key ./
+COPY --chown=app:app ./server.crt ./
+
+
 # This ordering means the npm installation is cached for the outer function handler.
 RUN npm i
 
 # Copy outer function handler
 COPY --chown=app:app index.js ./
+
 
 # COPY function node packages and install, adding this as a separate
 # entry allows caching of npm install
