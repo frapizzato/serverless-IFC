@@ -78,3 +78,15 @@ $ kubectl get pods -n openfaas-fn  # to retrieve the name of the functions' pod
 $ nsenter-pod <name-of-func-pod> python3 ./2_function.py <name-of-func-pod>
 ```
 
+## Random
+To quiclky enter into the network namespace of a running pod, you could use the following bash function which takes as argument the name of the running pod (needs to be executed in the same machine in which the pod's container is present).
+
+```bash
+function nsenter-pod (){
+   POD=$1  #pod name
+   NETNS=$(sudo crictl inspectp --name $POD | grep netns | sed -n 's/.*"path": "\([^"]*\)".*/\1/p')
+   shift 1
+   sudo nsenter --net=$NETNS $@
+}
+```
+
