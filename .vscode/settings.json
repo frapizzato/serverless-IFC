@@ -1,0 +1,21 @@
+{
+    "files.associations": {
+        "random": "c",
+        "bpf_helpers.h": "c",
+        "controller.h": "c",
+        "bpf_core_read.h": "c",
+        "hash.bpf.h": "c",
+        "*.tcc": "c",
+        "cmath": "c",
+        "optional": "c",
+        "system_error": "c",
+        "array": "c",
+        "functional": "c",
+        "tuple": "c",
+        "type_traits": "c",
+        "utility": "c",
+        "istream": "c",
+        "ostream": "c",
+        "inttypes.h": "c"
+    }
+}
